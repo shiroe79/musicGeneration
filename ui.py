@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import datetime
 import html
 import json
 import math
@@ -10,7 +11,7 @@ import traceback
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import gradio as gr
 import mido
@@ -611,6 +612,27 @@ def _dashboard_chord_events(
     return events
 
 
+def _dashboard_tension_points(
+    manifest_data: dict[str, Any],
+    tempo_bpm: float,
+) -> list[dict[str, float]]:
+    """Realized tension curve, converted from beat-index time to seconds.
+
+    Target-vs-realized is intentionally not wired in yet (planned as a later
+    toggle) — this only surfaces `structure.tension_curve`.
+    """
+    seconds_per_beat = 60.0 / tempo_bpm
+    points = []
+    for beat_time, value in manifest_data.get("structure", {}).get("tension_curve", []):
+        points.append(
+            {
+                "t": round(float(beat_time) * seconds_per_beat, 4),
+                "v": round(float(value), 4),
+            }
+        )
+    return points
+
+
 def _build_playback_dashboard(
     wav_path: Path,
     score_path: Path,
@@ -622,6 +644,7 @@ def _build_playback_dashboard(
     edo = int(manifest_data.get("config", {}).get("run_config", {}).get("edo", 12))
     notes = _dashboard_note_events(score_data, edo)
     chords = _dashboard_chord_events(manifest_data, tempo_bpm)
+    tension = _dashboard_tension_points(manifest_data, tempo_bpm)
     audio_base64 = base64.b64encode(wav_path.read_bytes()).decode("ascii")
 
     payload = json.dumps(
@@ -629,6 +652,8 @@ def _build_playback_dashboard(
             "audio": f"data:audio/wav;base64,{audio_base64}",
             "notes": notes,
             "chords": chords,
+            "tension": tension,
+            "secondsPerBeat": round(60.0 / tempo_bpm, 6),
         }
     )
     iframe_document = f"""<!doctype html>
@@ -650,14 +675,124 @@ def _build_playback_dashboard(
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }}
     audio {{
+      display: none;
+    }}
+    .controls {{
+      outline: none;
+    }}
+    .transport {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      margin-bottom: 8px;
+    }}
+    .ctrl-btn {{
+      background: transparent;
+      border: none;
+      outline: none;
+      -webkit-tap-highlight-color: transparent;
+      color: #e5e9f0;
+      cursor: pointer;
+      font-size: 16px;
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      padding: 0;
+    }}
+    .ctrl-btn:focus,
+    .ctrl-btn:active {{
+      outline: none;
+      background: transparent;
+    }}
+    .ctrl-btn:hover {{
+      background: #232a36;
+    }}
+    .ctrl-btn-main {{
+      font-size: 15px;
+    }}
+    .seek-row {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }}
+    .time-label {{
+      color: #9aa4b2;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      min-width: 30px;
+      text-align: center;
+    }}
+    .seek-track {{
+      position: relative;
+      flex: 1;
+      height: 4px;
+      border-radius: 99px;
+      background: #2a303a;
+      cursor: pointer;
+    }}
+    .seek-fill {{
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100%;
+      width: 0%;
+      border-radius: 99px;
+      background: #f35620;
+      pointer-events: none;
+    }}
+    .seek-handle {{
+      position: absolute;
+      top: 50%;
+      left: 0%;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #f35620;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+    }}
+    .tension-wrap {{
+      margin-top: 26px;
+      padding-top: 14px;
+      border-top: 1px solid #232a36;
+    }}
+    .tension-label {{
+      color: #9aa4b2;
+      font-size: 11px;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }}
+    .tension-svg {{
       width: 100%;
-      height: 40px;
-      margin-bottom: 10px;
+      height: 56px;
+      display: block;
+      border-radius: 6px;
+      background: #10141b;
+      cursor: pointer;
+    }}
+    .tension-grid-line {{
+      stroke: #232a36;
+      stroke-width: 1;
+    }}
+    .tension-line {{
+      fill: none;
+      stroke: #f35620;
+      stroke-width: 2;
+    }}
+    .tension-playhead {{
+      stroke: #f8fafc;
+      stroke-width: 1.5;
     }}
     .grid {{
       display: grid;
       grid-template-columns: 1fr 1fr 2fr;
       gap: 8px;
+      margin-top: 10px;
     }}
     .cell {{
       min-height: 54px;
@@ -695,23 +830,39 @@ def _build_playback_dashboard(
     .track {{
       color: #9fb5d4;
     }}
-    .bar {{
-      height: 5px;
-      margin-top: 10px;
-      border-radius: 99px;
-      background: #2a303a;
-      overflow: hidden;
-    }}
-    .fill {{
-      height: 100%;
-      width: 0%;
-      background: #7dd3fc;
-    }}
   </style>
 </head>
 <body>
   <div class="panel">
-    <audio id="player" controls src=""></audio>
+    <audio id="player" src=""></audio>
+
+    <div class="controls" id="controls" tabindex="0">
+      <div class="transport">
+        <button id="back" class="ctrl-btn" title="Previous beat (Left arrow)" aria-label="Previous beat">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M6 6h2v12H6zM20 18V6l-10 6z"/></svg>
+        </button>
+        <button id="playpause" class="ctrl-btn ctrl-btn-main" title="Play / Pause" aria-label="Play or pause">
+          <svg id="playIcon" viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+        <button id="fwd" class="ctrl-btn" title="Next beat (Right arrow)" aria-label="Next beat">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M18 6h-2v12h2zM4 6v12l10-6z"/></svg>
+        </button>
+      </div>
+      <div class="seek-row">
+        <span id="curTime" class="time-label">0:00</span>
+        <div id="seekTrack" class="seek-track">
+          <div id="seekFill" class="seek-fill"></div>
+          <div id="seekHandle" class="seek-handle"></div>
+        </div>
+        <span id="durTime" class="time-label">0:00</span>
+      </div>
+    </div>
+
+    <div class="tension-wrap" id="tensionWrap">
+      <div class="tension-label">Tension</div>
+      <svg id="tensionSvg" class="tension-svg" viewBox="0 0 1000 56" preserveAspectRatio="none"></svg>
+    </div>
+
     <div class="grid">
       <div class="cell">
         <div class="label">Time</div>
@@ -726,16 +877,36 @@ def _build_playback_dashboard(
         <div id="notes" class="notes"><span class="chip">-</span></div>
       </div>
     </div>
-    <div class="bar"><div id="progress" class="fill"></div></div>
   </div>
   <script>
     const data = {payload};
     const player = document.getElementById("player");
+    const controls = document.getElementById("controls");
+    const playPauseBtn = document.getElementById("playpause");
+    const backBtn = document.getElementById("back");
+    const fwdBtn = document.getElementById("fwd");
+    const curTimeEl = document.getElementById("curTime");
+    const durTimeEl = document.getElementById("durTime");
+    const seekTrack = document.getElementById("seekTrack");
+    const seekFill = document.getElementById("seekFill");
+    const seekHandle = document.getElementById("seekHandle");
     const timeEl = document.getElementById("time");
     const chordEl = document.getElementById("chord");
     const notesEl = document.getElementById("notes");
-    const progressEl = document.getElementById("progress");
+    const tensionWrap = document.getElementById("tensionWrap");
+    const tensionSvg = document.getElementById("tensionSvg");
     player.src = data.audio;
+
+    const NS = "http://www.w3.org/2000/svg";
+    let beatSeconds = [];
+    let playheadLine = null;
+
+    function formatTime(seconds) {{
+      const s = Math.max(0, seconds || 0);
+      const mins = Math.floor(s / 60);
+      const secs = Math.floor(s % 60);
+      return mins + ":" + String(secs).padStart(2, "0");
+    }}
 
     function currentChord(t) {{
       return data.chords.find((item) => item.start <= t && t < item.end);
@@ -745,8 +916,98 @@ def _build_playback_dashboard(
       return data.notes.filter((item) => item.start <= t && t < item.end).slice(0, 14);
     }}
 
+    function nearestBeatIndex(t) {{
+      let idx = 0;
+      for (let i = 0; i < beatSeconds.length; i++) {{
+        if (beatSeconds[i] <= t + 0.02) idx = i;
+      }}
+      return idx;
+    }}
+
+    function skip(direction) {{
+      if (!beatSeconds.length) return;
+      const t = player.currentTime || 0;
+      const idx = nearestBeatIndex(t);
+      const targetIdx = Math.min(beatSeconds.length - 1, Math.max(0, idx + direction));
+      player.currentTime = beatSeconds[targetIdx];
+      render();
+    }}
+
+    function seekToClientX(clientX) {{
+      const duration = player.duration || 0;
+      if (!duration) return;
+      const rect = seekTrack.getBoundingClientRect();
+      const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      player.currentTime = frac * duration;
+      render();
+    }}
+
+    function seekTensionToClientX(clientX) {{
+      const duration = player.duration || 0;
+      if (!duration) return;
+      const rect = tensionSvg.getBoundingClientRect();
+      const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      player.currentTime = frac * duration;
+      render();
+    }}
+
+    function buildTensionChart() {{
+      const duration = player.duration || 0;
+      tensionSvg.innerHTML = "";
+      if (!duration || !data.tension.length) {{
+        tensionWrap.style.display = "none";
+        return;
+      }}
+      tensionWrap.style.display = "block";
+
+      beatSeconds.forEach((t) => {{
+        const x = (t / duration) * 1000;
+        const gridLine = document.createElementNS(NS, "line");
+        gridLine.setAttribute("x1", x);
+        gridLine.setAttribute("x2", x);
+        gridLine.setAttribute("y1", 0);
+        gridLine.setAttribute("y2", 56);
+        gridLine.setAttribute("class", "tension-grid-line");
+        tensionSvg.appendChild(gridLine);
+      }});
+
+      const points = data.tension
+        .map((p) => {{
+          const x = (p.t / duration) * 1000;
+          const y = 54 - Math.min(1, Math.max(0, p.v)) * 50;
+          return x.toFixed(2) + "," + y.toFixed(2);
+        }})
+        .join(" ");
+      const polyline = document.createElementNS(NS, "polyline");
+      polyline.setAttribute("points", points);
+      polyline.setAttribute("class", "tension-line");
+      tensionSvg.appendChild(polyline);
+
+      playheadLine = document.createElementNS(NS, "line");
+      playheadLine.setAttribute("x1", 0);
+      playheadLine.setAttribute("x2", 0);
+      playheadLine.setAttribute("y1", 0);
+      playheadLine.setAttribute("y2", 56);
+      playheadLine.setAttribute("class", "tension-playhead");
+      tensionSvg.appendChild(playheadLine);
+    }}
+
+    function updatePosition() {{
+      const t = player.currentTime || 0;
+      const duration = player.duration || 0;
+      const frac = duration ? Math.min(1, t / duration) : 0;
+      curTimeEl.textContent = formatTime(t);
+      seekFill.style.width = (frac * 100) + "%";
+      seekHandle.style.left = (frac * 100) + "%";
+      if (playheadLine) {{
+        playheadLine.setAttribute("x1", frac * 1000);
+        playheadLine.setAttribute("x2", frac * 1000);
+      }}
+    }}
+
     function render() {{
       const t = player.currentTime || 0;
+      const duration = player.duration || 0;
       const chord = currentChord(t);
       const notes = currentNotes(t);
       timeEl.textContent = t.toFixed(2) + "s";
@@ -754,35 +1015,92 @@ def _build_playback_dashboard(
       notesEl.innerHTML = notes.length
         ? notes.map((note) => `<span class="chip">${{note.label}} <span class="track">${{note.track}}</span></span>`).join("")
         : `<span class="chip">-</span>`;
-      const duration = player.duration || 0;
-      progressEl.style.width = duration ? `${{Math.min(100, (t / duration) * 100)}}%` : "0%";
+      durTimeEl.textContent = formatTime(duration);
+      updatePosition();
     }}
 
-    let timer = null;
-    player.addEventListener("loadedmetadata", render);
+    let rafId = null;
+    function positionLoop() {{
+      updatePosition();
+      if (!player.paused && !player.ended) {{
+        rafId = window.requestAnimationFrame(positionLoop);
+      }}
+    }}
+    function startPositionLoop() {{
+      if (rafId !== null) return;
+      rafId = window.requestAnimationFrame(positionLoop);
+    }}
+    function stopPositionLoop() {{
+      if (rafId !== null) {{
+        window.cancelAnimationFrame(rafId);
+        rafId = null;
+      }}
+    }}
+
+    const PLAY_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+    const PAUSE_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>';
+
+    player.addEventListener("loadedmetadata", () => {{
+      const duration = player.duration || 0;
+      const spb = data.secondsPerBeat || 1;
+      beatSeconds = [];
+      for (let t = 0; t <= duration + 0.001; t += spb) {{
+        beatSeconds.push(Math.min(t, duration));
+      }}
+      if (!beatSeconds.length) beatSeconds = [0];
+      buildTensionChart();
+      render();
+    }});
     player.addEventListener("timeupdate", render);
     player.addEventListener("seeked", render);
     player.addEventListener("play", () => {{
-      render();
-      timer = window.setInterval(render, 100);
+      playPauseBtn.innerHTML = PAUSE_ICON;
+      startPositionLoop();
     }});
     player.addEventListener("pause", () => {{
-      if (timer) window.clearInterval(timer);
-      timer = null;
+      playPauseBtn.innerHTML = PLAY_ICON;
+      stopPositionLoop();
       render();
     }});
     player.addEventListener("ended", () => {{
-      if (timer) window.clearInterval(timer);
-      timer = null;
+      playPauseBtn.innerHTML = PLAY_ICON;
+      stopPositionLoop();
       render();
     }});
+
+    playPauseBtn.addEventListener("click", () => {{
+      if (player.paused) {{
+        player.play();
+      }} else {{
+        player.pause();
+      }}
+    }});
+    backBtn.addEventListener("click", () => skip(-1));
+    fwdBtn.addEventListener("click", () => skip(1));
+    seekTrack.addEventListener("click", (e) => seekToClientX(e.clientX));
+    tensionSvg.addEventListener("click", (e) => seekTensionToClientX(e.clientX));
+
+    controls.addEventListener("click", () => controls.focus());
+    controls.addEventListener("keydown", (e) => {{
+      if (e.key === "ArrowLeft") {{
+        e.preventDefault();
+        skip(-1);
+      }} else if (e.key === "ArrowRight") {{
+        e.preventDefault();
+        skip(1);
+      }} else if (e.key === " ") {{
+        e.preventDefault();
+        if (player.paused) player.play(); else player.pause();
+      }}
+    }});
+
     render();
   </script>
 </body>
 </html>"""
     return (
         '<iframe title="MIDI playback dashboard" '
-        'style="width:100%;height:185px;border:0;border-radius:8px;" '
+        'style="width:100%;height:270px;border:0;border-radius:8px;" '
         f'srcdoc="{html.escape(iframe_document, quote=True)}"></iframe>'
     )
 
@@ -830,6 +1148,44 @@ def _error_markdown(message: str, *, include_traceback: bool = False) -> str:
     return f"### Error\n{message}"
 
 
+MAX_HISTORY_ENTRIES = 25
+
+
+class HistoryEntry(TypedDict):
+    run_id: str
+    label: str
+    dashboard: str
+    summary: str
+    table: str
+    midi_path: str
+    score_path: str
+    manifest_path: str
+
+
+def _history_label(params: GenerationParams, run_id: str) -> str:
+    stamp = datetime.datetime.now().strftime("%H:%M:%S")
+    return f"seed={params.seed} · {params.beats} beats · {stamp} · {run_id[:8]}"
+
+
+def _history_entry(
+    params: GenerationParams,
+    artifacts: GeneratedArtifacts,
+    dashboard: str,
+    summary: str,
+    table: str,
+) -> HistoryEntry:
+    return HistoryEntry(
+        run_id=artifacts.run_id,
+        label=_history_label(params, artifacts.run_id),
+        dashboard=dashboard,
+        summary=summary,
+        table=table,
+        midi_path=str(artifacts.midi_path),
+        score_path=str(artifacts.score_path),
+        manifest_path=str(artifacts.manifest_path),
+    )
+
+
 def generate_music(
     seed: Any,
     beats: Any,
@@ -848,15 +1204,15 @@ def generate_music(
     comping_program: Any,
     lead_program: Any,
     drum_track: list[str],
+    history: list[HistoryEntry],
 ) -> tuple[
     str,
     dict[str, Any],
     dict[str, Any],
-    dict[str, Any],
-    dict[str, Any],
-    dict[str, Any],
     str,
+    list[HistoryEntry],
 ]:
+    history = list(history or [])
     try:
         params = _normalize_inputs(
             seed,
@@ -883,12 +1239,10 @@ def generate_music(
     except Exception:
         return (
             "",
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(visible=False),
             gr.update(value="", visible=False),
             gr.update(value="", visible=False),
             _error_markdown(traceback.format_exc(), include_traceback=True),
+            history,
         )
 
     try:
@@ -901,29 +1255,44 @@ def generate_music(
     except MidiAudioConversionError as exc:
         return (
             "",
-            gr.update(value=str(artifacts.midi_path), visible=True),
-            gr.update(value=str(artifacts.score_path), visible=True),
-            gr.update(value=str(artifacts.manifest_path), visible=True),
             gr.update(value=summary, visible=True),
             gr.update(value=table, visible=True),
             _error_markdown(str(exc)),
+            history,
         )
+
+    entry = _history_entry(params, artifacts, dashboard, summary, table)
+    history = ([entry] + history)[:MAX_HISTORY_ENTRIES]
 
     return (
         dashboard,
-        gr.update(value=str(artifacts.midi_path), visible=True),
-        gr.update(value=str(artifacts.score_path), visible=True),
-        gr.update(value=str(artifacts.manifest_path), visible=True),
         gr.update(value=summary, visible=True),
         gr.update(value=table, visible=True),
+        "",
+        history,
+    )
+
+
+def select_history_entry(
+    entry: HistoryEntry,
+) -> tuple[str, dict[str, Any], dict[str, Any], str]:
+    return (
+        entry["dashboard"],
+        gr.update(value=entry["summary"], visible=True),
+        gr.update(value=entry["table"], visible=True),
         "",
     )
 
 
-def _download_component(label: str) -> gr.components.Component:
+def _history_file_download(label: str, path: str) -> gr.components.Component:
     if hasattr(gr, "DownloadButton"):
-        return gr.DownloadButton(label=label)
-    return gr.File(label=label, interactive=False)
+        return gr.DownloadButton(
+            label=label,
+            value=path,
+            size="sm",
+            elem_classes="history-file-btn",
+        )
+    return gr.File(value=path, label=label, interactive=False)
 
 
 css = """
@@ -935,6 +1304,11 @@ css = """
     .density-box input[type=range] { height: 3px !important; }
     input[type=number] { padding: 1px 4px !important; }
     .drum-check .wrap { display: flex !important; flex-direction: row !important; flex-wrap: wrap !important; gap: 12px !important; }
+    .history-row { gap: 4px !important; margin-bottom: 2px !important; }
+    .history-select { text-align: left !important; justify-content: flex-start !important; font-size: 11px !important; }
+    .history-icon-btn { min-width: 30px !important; max-width: 34px !important; padding: 0 !important; font-size: 13px !important; }
+    .history-downloads { gap: 4px !important; margin: 0 0 8px 0 !important; padding-left: 4px !important; }
+    .history-file-btn { font-size: 10px !important; padding: 2px 6px !important; min-width: 0 !important; }
 """
 
 with gr.Blocks(title="MIDI Generator", fill_height=True) as demo:
@@ -962,6 +1336,10 @@ with gr.Blocks(title="MIDI Generator", fill_height=True) as demo:
                 choices=[method.name for method in MicrotonalRendering],
                 value=MicrotonalRendering.MPE.name,
             )
+
+            gr.Markdown("### History")
+            history_state = gr.State([])
+            history_list = gr.Column()
 
         with gr.Column(scale=2):
             with gr.Row(equal_height=True):
@@ -1015,13 +1393,56 @@ with gr.Blocks(title="MIDI Generator", fill_height=True) as demo:
             with gr.Row(equal_height=True):
                 summary = gr.Markdown(visible=False, scale=1)
                 table = gr.Markdown(visible=False, scale=1)
-                with gr.Column(scale=1, min_width=160):
-                    midi_download = _download_component("Download MIDI")
-                    score_download = _download_component("Download score JSON")
-                    manifest_download = _download_component("Download manifest JSON")
-                    midi_download.visible = False
-                    score_download.visible = False
-                    manifest_download.visible = False
+
+    with history_list:
+
+        @gr.render(inputs=history_state)
+        def render_history(history: list[HistoryEntry]) -> None:
+            if not history:
+                gr.Markdown("<small style='color:#9aa4b2'>No runs yet.</small>")
+                return
+            for entry in history:
+                downloads_open = gr.State(False)
+                with gr.Row(elem_classes="history-row", equal_height=True):
+                    select_btn = gr.Button(
+                        entry["label"],
+                        elem_classes="history-select",
+                        size="sm",
+                        scale=4,
+                    )
+                    downloads_toggle = gr.Button(
+                        "\u2b07",
+                        elem_classes="history-icon-btn",
+                        size="sm",
+                        scale=0,
+                    )
+                with gr.Row(elem_classes="history-downloads", visible=False) as downloads_row:
+                    _history_file_download("MIDI", entry["midi_path"])
+                    _history_file_download("Score JSON", entry["score_path"])
+                    _history_file_download("Manifest JSON", entry["manifest_path"])
+
+                def _toggle(is_open: bool) -> tuple[dict[str, Any], bool]:
+                    new_state = not is_open
+                    return gr.update(visible=new_state), new_state
+
+                downloads_toggle.click(  # type: ignore[attr-defined]
+                    fn=_toggle,
+                    inputs=[downloads_open],
+                    outputs=[downloads_row, downloads_open],
+                    show_progress="hidden",
+                )
+
+                select_btn.click(  # type: ignore[attr-defined]
+                    fn=lambda selected=entry: select_history_entry(selected),
+                    inputs=None,
+                    outputs=[
+                        dashboard,
+                        summary,
+                        table,
+                        status,
+                    ],
+                    show_progress="hidden",
+                )
 
     generate_button.click(  # type: ignore[attr-defined]
         fn=generate_music,
@@ -1043,15 +1464,14 @@ with gr.Blocks(title="MIDI Generator", fill_height=True) as demo:
             comping_program,
             lead_program,
             drum_track,
+            history_state,
         ],
         outputs=[
             dashboard,
-            midi_download,
-            score_download,
-            manifest_download,
             summary,
             table,
             status,
+            history_state,
         ],
         show_progress="full",
     )
