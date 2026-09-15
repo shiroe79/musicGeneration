@@ -13,11 +13,12 @@ Covers the acceptance criteria that don't already fit naturally into
 from __future__ import annotations
 
 import unittest
+from typing import ClassVar
 
 from aimusic.core.config import SBConfig, StyleConfig
 from aimusic.core.core_types import BeatState, EndpointDistribution, Layer
 from aimusic.core.rng import RNGKey
-from aimusic.core.vocab import build_tonal_context
+from aimusic.core.vocab import Vocabularies, build_tonal_context
 from aimusic.planning.candidates import get_valid_next_states
 from aimusic.planning.graph import build_sparse_graph
 from aimusic.planning.sb import build_sb_problem, sample_bridge_path, solve_sb
@@ -150,6 +151,11 @@ class TestPriorGuidedRankingIsDeterministic(unittest.TestCase):
 
 class TestTinyVocabularyRecall(unittest.TestCase):
     """Bounded proposal recall against an exhaustive search, on a small vocab."""
+
+    style: ClassVar[StyleConfig]
+    vocabs: ClassVar[Vocabularies]
+    prev: ClassVar[BeatState]
+    prior: ClassVar[NeuralPrior]
 
     @classmethod
     def setUpClass(cls):
