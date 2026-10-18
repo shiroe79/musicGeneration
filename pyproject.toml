@@ -33,6 +33,10 @@ audio-bridge = [
   "aimusic[audio]",
   # TODO PR3: pin git tag midi2audio-generative@v0.1.0 once URL confirmed
 ]
+ui = [
+  "gradio>=5",
+  "plotly",
+]
 dev = [
   "pytest",
   "flake8",

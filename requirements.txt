@@ -5,3 +5,4 @@ mido
 PyYAML
 gradio
 pytest
+plotly
